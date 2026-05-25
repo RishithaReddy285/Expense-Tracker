@@ -38,6 +38,7 @@ export default function ExpenseForm({ selected, onCancel, onSubmit }) {
     if (!file) return;
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("client_modified_at", new Date(file.lastModified).toISOString());
     setAnalyzing(true);
     try {
       const { data } = await api.post("/expenses/analyze-upload", formData, {
@@ -65,6 +66,7 @@ export default function ExpenseForm({ selected, onCancel, onSubmit }) {
   function sourceLabel(source) {
     if (source === "receipt") return "from receipt";
     if (source === "image metadata") return "from image";
+    if (source === "file timestamp") return "from file";
     if (source === "upload time") return "from upload";
     return "";
   }

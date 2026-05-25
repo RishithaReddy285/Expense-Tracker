@@ -1,5 +1,5 @@
 from datetime import date
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from app.api.deps import get_current_user
 from app.schemas.expense import ExpenseCreate, ExpenseListOut, ExpenseOut, ExpenseUpdate, MonthlySummaryOut, UploadAnalysisOut
 from app.services.expense_service import analyze_upload, create_expense, delete_expense, export_csv, export_pdf, list_expenses, monthly_summary, update_expense
@@ -28,9 +28,13 @@ async def post_expense(payload: ExpenseCreate, user: dict = Depends(get_current_
 
 
 @router.post("/analyze-upload", response_model=UploadAnalysisOut)
-async def upload_receipt(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def upload_receipt(
+    file: UploadFile = File(...),
+    client_modified_at: str | None = Form(default=None),
+    user: dict = Depends(get_current_user),
+):
     data = await file.read()
-    return await analyze_upload(data, file.content_type)
+    return await analyze_upload(data, file.content_type, client_modified_at)
 
 
 @router.put("/{expense_id}", response_model=ExpenseOut)

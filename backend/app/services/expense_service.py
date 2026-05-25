@@ -172,7 +172,44 @@ def _valid_time(value: object) -> str | None:
     return None
 
 
-async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
+def _client_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _analysis_payload(model: str, prompt: str, content_type: str, encoded_image: str) -> dict:
+    return {
+        "model": model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded_image}"}},
+                ],
+            }
+        ],
+    }
+
+
+async def _ask_groq(prompt: str, encoded_image: str, content_type: str, headers: dict, model: str) -> dict:
+    payload = _analysis_payload(model, prompt, content_type, encoded_image)
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    if response.status_code >= 400:
+        detail = response.text[:500]
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Groq analysis failed: {detail}")
+    content = response.json()["choices"][0]["message"]["content"]
+    return _extract_json(content)
+
+
+async def analyze_upload(file_bytes: bytes, content_type: str | None, client_modified_at: str | None = None) -> dict:
     settings = get_settings()
     if not settings.groq_api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="GROQ_API_KEY is not configured")
@@ -191,29 +228,8 @@ async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
         "payment_method must be one of Cash, Credit Card, Debit Card, UPI, Bank Transfer, Wallet. "
         "Use null only when the receipt image truly has no visible value."
     )
-    payload = {
-        "model": settings.groq_vision_model,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded}"}},
-                ],
-            }
-        ],
-    }
     headers = {"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    if response.status_code >= 400:
-        detail = response.text[:500]
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Groq analysis failed: {detail}")
-
-    content = response.json()["choices"][0]["message"]["content"]
-    result = _extract_json(content)
+    result = await _ask_groq(prompt, encoded, content_type, headers, settings.groq_vision_model)
     result["confidence"] = float(result.get("confidence") or 0)
     if result.get("category") not in CATEGORIES:
         result["category"] = "Other" if result.get("category") else None
@@ -226,12 +242,26 @@ async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
             result["amount"] = None
     result["date"] = _valid_date(result.get("date"))
     result["time"] = _valid_time(result.get("time"))
+
+    if not result["date"] or not result["time"]:
+        focused_prompt = (
+            "Look only for the transaction date and transaction time in this image. "
+            "Check small text, headers, footers, UPI/payment timestamps, invoice date, bill date, order date, and paid-at lines. "
+            "Return strict JSON only with keys date, time, confidence. "
+            "Use date as YYYY-MM-DD and time as HH:MM 24-hour format. Use null only if no visible date/time exists."
+        )
+        focused = await _ask_groq(focused_prompt, encoded, content_type, headers, settings.groq_vision_model)
+        result["date"] = result["date"] or _valid_date(focused.get("date"))
+        result["time"] = result["time"] or _valid_time(focused.get("time"))
+        result["confidence"] = max(result["confidence"], float(focused.get("confidence") or 0))
+
     result["date_source"] = "receipt" if result["date"] else "not_found"
     result["time_source"] = "receipt" if result["time"] else "not_found"
 
     metadata_timestamp = _image_timestamp(file_bytes)
-    fallback = metadata_timestamp or datetime.now().astimezone().replace(tzinfo=None)
-    fallback_source = "image metadata" if metadata_timestamp else "upload time"
+    browser_timestamp = _client_timestamp(client_modified_at)
+    fallback = metadata_timestamp or browser_timestamp or datetime.now().astimezone().replace(tzinfo=None)
+    fallback_source = "image metadata" if metadata_timestamp else "file timestamp" if browser_timestamp else "upload time"
     if not result["date"]:
         result["date"] = fallback.date().isoformat()
         result["date_source"] = fallback_source
