@@ -75,3 +75,14 @@ class MonthlySummaryOut(BaseModel):
     budget: float
     budget_used_percent: float
     alert: str | None = None
+
+
+class UploadAnalysisOut(BaseModel):
+    title: str | None = None
+    amount: float | None = None
+    category: Category | None = None
+    date: str | None = None
+    time: str | None = None
+    payment_method: PaymentMethod | None = None
+    notes: str | None = None
+    confidence: float = 0

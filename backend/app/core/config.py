@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(default=1440, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
+    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_vision_model: str = Field(default="meta-llama/llama-4-scout-17b-16e-instruct", alias="GROQ_VISION_MODEL")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

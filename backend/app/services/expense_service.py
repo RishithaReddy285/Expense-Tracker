@@ -1,13 +1,21 @@
 from datetime import date
 from io import BytesIO, StringIO
+import base64
 import csv
+import json
+import re
 from bson import ObjectId
 from fastapi import HTTPException, status
+import httpx
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from app.core.config import get_settings
 from app.db.mongodb import get_database
 from app.models.common import object_id, serialize_doc
 from app.schemas.expense import ExpenseCreate, ExpenseUpdate
+
+CATEGORIES = {"Food", "Transport", "Shopping", "Housing", "Utilities", "Health", "Entertainment", "Travel", "Education", "Other"}
+PAYMENT_METHODS = {"Cash", "Credit Card", "Debit Card", "UPI", "Bank Transfer", "Wallet"}
 
 
 def expense_doc(payload: ExpenseCreate | ExpenseUpdate, user_id: str | None = None) -> dict:
@@ -117,3 +125,72 @@ async def export_pdf(user_id: str) -> bytes:
             y = 760
     pdf.save()
     return buffer.getvalue()
+
+
+def _extract_json(text: str) -> dict:
+    cleaned = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    else:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            cleaned = match.group(0)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI response could not be parsed")
+
+
+async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
+    settings = get_settings()
+    if not settings.groq_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="GROQ_API_KEY is not configured")
+    if not content_type or not content_type.startswith("image/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload a receipt image file")
+    if len(file_bytes) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File must be smaller than 8 MB")
+
+    encoded = base64.b64encode(file_bytes).decode("utf-8")
+    prompt = (
+        "Analyze this expense receipt or payment screenshot. Return only strict JSON with keys: "
+        "title, amount, category, date, time, payment_method, notes, confidence. "
+        "Use ISO date YYYY-MM-DD. Use 24-hour time HH:MM when visible. "
+        "category must be one of Food, Transport, Shopping, Housing, Utilities, Health, Entertainment, Travel, Education, Other. "
+        "payment_method must be one of Cash, Credit Card, Debit Card, UPI, Bank Transfer, Wallet. "
+        "Use null when a value is not visible."
+    )
+    payload = {
+        "model": settings.groq_vision_model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded}"}},
+                ],
+            }
+        ],
+    }
+    headers = {"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    if response.status_code >= 400:
+        detail = response.text[:500]
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Groq analysis failed: {detail}")
+
+    content = response.json()["choices"][0]["message"]["content"]
+    result = _extract_json(content)
+    result["confidence"] = float(result.get("confidence") or 0)
+    if result.get("category") not in CATEGORIES:
+        result["category"] = "Other" if result.get("category") else None
+    if result.get("payment_method") not in PAYMENT_METHODS:
+        result["payment_method"] = None
+    if result.get("amount") is not None:
+        try:
+            result["amount"] = float(result["amount"])
+        except (TypeError, ValueError):
+            result["amount"] = None
+    return result
