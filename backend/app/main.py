@@ -38,5 +38,15 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/", tags=["System"])
+async def root():
+    return {
+        "message": "Expense Tracker API is running",
+        "frontend": "http://localhost:5174",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 app.include_router(auth_router)
 app.include_router(expenses_router)
