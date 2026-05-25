@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO, StringIO
 import base64
 import csv
@@ -7,6 +7,7 @@ import re
 from bson import ObjectId
 from fastapi import HTTPException, status
 import httpx
+from PIL import Image, ExifTags
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from app.core.config import get_settings
@@ -16,6 +17,8 @@ from app.schemas.expense import ExpenseCreate, ExpenseUpdate
 
 CATEGORIES = {"Food", "Transport", "Shopping", "Housing", "Utilities", "Health", "Entertainment", "Travel", "Education", "Other"}
 PAYMENT_METHODS = {"Cash", "Credit Card", "Debit Card", "UPI", "Bank Transfer", "Wallet"}
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
 
 def expense_doc(payload: ExpenseCreate | ExpenseUpdate, user_id: str | None = None) -> dict:
@@ -142,6 +145,33 @@ def _extract_json(text: str) -> dict:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI response could not be parsed")
 
 
+def _image_timestamp(file_bytes: bytes) -> datetime | None:
+    try:
+        with Image.open(BytesIO(file_bytes)) as image:
+            exif = image.getexif()
+            if not exif:
+                return None
+            names = {ExifTags.TAGS.get(tag, tag): value for tag, value in exif.items()}
+            raw = names.get("DateTimeOriginal") or names.get("DateTimeDigitized") or names.get("DateTime")
+            if not raw:
+                return None
+            return datetime.strptime(str(raw), "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _valid_date(value: object) -> str | None:
+    if isinstance(value, str) and DATE_PATTERN.match(value):
+        return value
+    return None
+
+
+def _valid_time(value: object) -> str | None:
+    if isinstance(value, str) and TIME_PATTERN.match(value):
+        return value
+    return None
+
+
 async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
     settings = get_settings()
     if not settings.groq_api_key:
@@ -153,12 +183,13 @@ async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
 
     encoded = base64.b64encode(file_bytes).decode("utf-8")
     prompt = (
-        "Analyze this expense receipt or payment screenshot. Return only strict JSON with keys: "
-        "title, amount, category, date, time, payment_method, notes, confidence. "
-        "Use ISO date YYYY-MM-DD. Use 24-hour time HH:MM when visible. "
+        "Analyze this expense receipt, bill, invoice, or payment screenshot. First read all visible text carefully. "
+        "Find the transaction date and transaction time from labels like date, time, paid at, order time, bill time, invoice date, or UPI timestamp. "
+        "Return only strict JSON with keys: title, amount, category, date, time, payment_method, notes, confidence. "
+        "Use ISO date YYYY-MM-DD. Use 24-hour time HH:MM. "
         "category must be one of Food, Transport, Shopping, Housing, Utilities, Health, Entertainment, Travel, Education, Other. "
         "payment_method must be one of Cash, Credit Card, Debit Card, UPI, Bank Transfer, Wallet. "
-        "Use null when a value is not visible."
+        "Use null only when the receipt image truly has no visible value."
     )
     payload = {
         "model": settings.groq_vision_model,
@@ -193,4 +224,21 @@ async def analyze_upload(file_bytes: bytes, content_type: str | None) -> dict:
             result["amount"] = float(result["amount"])
         except (TypeError, ValueError):
             result["amount"] = None
+    result["date"] = _valid_date(result.get("date"))
+    result["time"] = _valid_time(result.get("time"))
+    result["date_source"] = "receipt" if result["date"] else "not_found"
+    result["time_source"] = "receipt" if result["time"] else "not_found"
+
+    metadata_timestamp = _image_timestamp(file_bytes)
+    fallback = metadata_timestamp or datetime.now().astimezone().replace(tzinfo=None)
+    fallback_source = "image metadata" if metadata_timestamp else "upload time"
+    if not result["date"]:
+        result["date"] = fallback.date().isoformat()
+        result["date_source"] = fallback_source
+    if not result["time"]:
+        result["time"] = fallback.strftime("%H:%M")
+        result["time_source"] = fallback_source
+    if fallback_source == "upload time" and (result["date_source"] == "upload time" or result["time_source"] == "upload time"):
+        note = "Receipt date/time was not visible, so upload time was used."
+        result["notes"] = f"{result.get('notes')}\n{note}" if result.get("notes") else note
     return result

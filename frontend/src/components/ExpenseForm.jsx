@@ -62,6 +62,13 @@ export default function ExpenseForm({ selected, onCancel, onSubmit }) {
     }
   }
 
+  function sourceLabel(source) {
+    if (source === "receipt") return "from receipt";
+    if (source === "image metadata") return "from image";
+    if (source === "upload time") return "from upload";
+    return "";
+  }
+
   return (
     <form onSubmit={submit} className="card p-5">
       <div className="flex items-center justify-between">
@@ -79,9 +86,11 @@ export default function ExpenseForm({ selected, onCancel, onSubmit }) {
           <div className="mt-3 grid gap-2 text-sm text-slate-600 dark:text-slate-300">
             <div className="rounded-lg bg-white px-3 py-2 dark:bg-slate-900">
               <span className="font-semibold text-slate-950 dark:text-white">Date:</span> {analysis.date || "Not found"}
+              {analysis.date_source && <span className="ml-1 text-xs text-slate-400">{sourceLabel(analysis.date_source)}</span>}
             </div>
             <div className="rounded-lg bg-white px-3 py-2 dark:bg-slate-900">
               <span className="font-semibold text-slate-950 dark:text-white">Time:</span> {analysis.time || "Not found"}
+              {analysis.time_source && <span className="ml-1 text-xs text-slate-400">{sourceLabel(analysis.time_source)}</span>}
             </div>
           </div>
         )}

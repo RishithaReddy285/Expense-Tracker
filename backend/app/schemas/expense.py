@@ -83,6 +83,8 @@ class UploadAnalysisOut(BaseModel):
     category: Category | None = None
     date: str | None = None
     time: str | None = None
+    date_source: str = "not_found"
+    time_source: str = "not_found"
     payment_method: PaymentMethod | None = None
     notes: str | None = None
     confidence: float = 0
