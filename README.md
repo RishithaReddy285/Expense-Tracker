@@ -119,12 +119,13 @@ The API creates indexes for users and expenses on startup.
 ## Deploy Backend on Render
 
 1. Push this repo to GitHub.
-2. Create a Render Web Service.
-3. Root directory: `backend`
-4. Build command: `pip install -r requirements.txt`
-5. Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-6. Add environment variables from `backend/.env.example`.
-7. Add the deployed frontend URL to `CORS_ORIGINS`.
+2. In Render, choose **New > Blueprint** and select this repository.
+3. Render will read `render.yaml` and create `expense-tracker-api`.
+4. Add secret environment variables:
+   - `MONGODB_URI`
+   - `CORS_ORIGINS`
+   - `GROQ_API_KEY`
+5. After the frontend is deployed, set `CORS_ORIGINS` to your Vercel URL, for example `https://your-app.vercel.app`.
 
 ## Deploy Frontend on Vercel
 
